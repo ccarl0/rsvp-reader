@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>RSVP Reader</title>
+    
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1a1a1a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="icon.png">
+
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        #input-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 80%;
+            max-width: 800px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 300px;
+            background-color: #333;
+            color: #fff;
+            border: 1px solid #555;
+            padding: 15px;
+            font-size: 16px;
+            resize: none;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            user-select: auto;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 18px;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        #reader-section {
+            display: none;
+            text-align: center;
+            width: 100%;
+        }
+
+        #word-display {
+            font-size: 80px;
+            font-weight: bold;
+            margin-bottom: 30px;
+            min-height: 100px;
+            color: #fff;
+        }
+
+        #info-bar {
+            font-size: 18px;
+            color: #888;
+            margin-top: 20px;
+        }
+
+        .instructions {
+            margin-top: 40px;
+            font-size: 14px;
+            color: #555;
+        }
+
+        #notification {
+            position: absolute;
+            top: 20px;
+            background-color: #28a745;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            opacity: 0;
+            transition: opacity 0.5s;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="notification">Posizione salvata</div>
+
+    <div id="input-section">
+        <h2 style="margin-bottom: 10px;">RSVP Reader</h2>
+        <textarea id="text-input" placeholder="Incolla qui il tuo testo..."></textarea>
+        <button id="start-btn">Read</button>
+    </div>
+
+    <div id="reader-section">
+        <div id="word-display">Pronto</div>
+        <div id="info-bar">
+            <span id="wpm-display">300</span> WPM | 
+            <span id="progress-display">0%</span>
+        </div>
+        <div class="instructions">
+            [SPAZIO] Play/Pausa &nbsp;|&nbsp; [↑] Velocizza &nbsp;|&nbsp; [↓] Rallenta &nbsp;|&nbsp; [ESC] Esci
+        </div>
+    </div>
+
+    <script>
+        // PWA Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js')
+                .then(reg => console.log('SW registered'))
+                .catch(err => console.log('SW error', err));
+        }
+
+        let words = [];
+        let currentIndex = 0;
+        let wpm = 300;
+        let isPlaying = false;
+        let timer = null;
+        let textHash = "";
+
+        const inputSection = document.getElementById('input-section');
+        const readerSection = document.getElementById('reader-section');
+        const textInput = document.getElementById('text-input');
+        const startBtn = document.getElementById('start-btn');
+        const wordDisplay = document.getElementById('word-display');
+        const wpmDisplay = document.getElementById('wpm-display');
+        const progressDisplay = document.getElementById('progress-display');
+        const notification = document.getElementById('notification');
+
+        function generateHash(str) {
+            let hash = 0;
+            if (str.length === 0) return hash;
+            for (let i = 0; i < str.length; i++) {
+                const char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash |= 0;
+            }
+            return "rsvp_" + hash;
+        }
+
+        function saveProgress() {
+            if (!textHash) return;
+            const data = {
+                index: currentIndex,
+                wpm: wpm
+            };
+            localStorage.setItem(textHash, JSON.stringify(data));
+        }
+
+        function loadProgress(hash) {
+            const saved = localStorage.getItem(hash);
+            if (saved) {
+                const data = JSON.parse(saved);
+                currentIndex = data.index < words.length ? data.index : 0;
+                wpm = data.wpm || 300;
+                showNotification(`Ripreso dalla parola ${currentIndex}`);
+            }
+        }
+
+        function showNotification(msg) {
+            notification.textContent = msg;
+            notification.style.opacity = 1;
+            setTimeout(() => { notification.style.opacity = 0; }, 2000);
+        }
+
+        const getInterval = () => 60000 / wpm;
+
+        startBtn.addEventListener('click', () => {
+            const text = textInput.value.trim();
+            if (!text) return alert("Inserisci del testo prima!");
+
+            words = text.split(/\s+/);
+            if (words.length === 0) return;
+
+            textHash = generateHash(text);
+            currentIndex = 0;
+            loadProgress(textHash);
+
+            isPlaying = false;
+            inputSection.style.display = 'none';
+            readerSection.style.display = 'block';
+            
+            updateDisplay();
+            wordDisplay.textContent = currentIndex > 0 ? words[currentIndex] : "Premi SPAZIO";
+            wpmDisplay.textContent = wpm;
+        });
+
+        function startReading() {
+            if (timer) clearInterval(timer);
+            isPlaying = true;
+            
+            timer = setInterval(() => {
+                if (currentIndex >= words.length - 1) {
+                    stopReading();
+                    wordDisplay.textContent = "Finito!";
+                    currentIndex = 0;
+                    saveProgress(); 
+                    return;
+                }
+                currentIndex++;
+                updateDisplay();
+            }, getInterval());
+        }
+
+        function stopReading() {
+            isPlaying = false;
+            if (timer) clearInterval(timer);
+            timer = null;
+            saveProgress();
+        }
+
+        function updateDisplay() {
+            if (currentIndex < words.length) {
+                wordDisplay.textContent = words[currentIndex];
+                wpmDisplay.textContent = wpm;
+                const progress = Math.round(((currentIndex + 1) / words.length) * 100);
+                progressDisplay.textContent = `${progress}%`;
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (readerSection.style.display === 'none') return;
+
+            switch(e.code) {
+                case 'Space':
+                    e.preventDefault();
+                    if (isPlaying) {
+                        stopReading();
+                        showNotification("Pausa & Salvato");
+                    } else {
+                        if (currentIndex >= words.length - 1) currentIndex = 0;
+                        startReading();
+                    }
+                    break;
+
+                case 'ArrowUp':
+                    e.preventDefault();
+                    wpm += 10;
+                    wpmDisplay.textContent = wpm;
+                    if (isPlaying) startReading();
+                    break;
+
+                case 'ArrowDown':
+                    e.preventDefault();
+                    wpm = Math.max(10, wpm - 10);
+                    wpmDisplay.textContent = wpm;
+                    if (isPlaying) startReading();
+                    break;
+                
+                case 'Escape':
+                    stopReading();
+                    readerSection.style.display = 'none';
+                    inputSection.style.display = 'flex';
+                    break;
+            }
+        });
+
+        window.addEventListener('beforeunload', () => {
+            saveProgress();
+        });
+    </script>
+</body>
+</html>
