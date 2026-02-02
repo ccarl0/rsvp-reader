@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>RSVP Reader</title>
+    <title>RSVP Pro</title>
     
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#1a1a1a">
@@ -69,12 +69,19 @@
             width: 100%;
         }
 
-        #word-display {
+        #word-container {
             font-size: 80px;
             font-weight: bold;
             margin-bottom: 30px;
-            min-height: 100px;
+            min-height: 120px;
             color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: baseline;
+        }
+
+        .highlight {
+            color: #ff4757;
         }
 
         #info-bar {
@@ -87,6 +94,7 @@
             margin-top: 40px;
             font-size: 14px;
             color: #555;
+            line-height: 1.6;
         }
 
         #notification {
@@ -97,51 +105,51 @@
             padding: 10px 20px;
             border-radius: 5px;
             opacity: 0;
-            transition: opacity 0.5s;
+            transition: opacity 0.3s;
+            z-index: 100;
         }
     </style>
 </head>
 <body>
 
-    <div id="notification">Posizione salvata</div>
+    <div id="notification">Salvato</div>
 
     <div id="input-section">
-        <h2 style="margin-bottom: 10px;">RSVP Reader</h2>
+        <h2 style="margin-bottom: 10px;">RSVP Pro</h2>
         <textarea id="text-input" placeholder="Incolla qui il tuo testo..."></textarea>
         <button id="start-btn">Read</button>
     </div>
 
     <div id="reader-section">
-        <div id="word-display">Pronto</div>
+        <div id="word-container">Pronto</div>
         <div id="info-bar">
             <span id="wpm-display">300</span> WPM | 
             <span id="progress-display">0%</span>
         </div>
         <div class="instructions">
-            [SPAZIO] Play/Pausa &nbsp;|&nbsp; [↑] Velocizza &nbsp;|&nbsp; [↓] Rallenta &nbsp;|&nbsp; [ESC] Esci
+            [SPAZIO] Play/Pausa<br>
+            [↑/↓] Velocità &nbsp;|&nbsp; [←/→] Salta parole<br>
+            [ESC] Esci
         </div>
     </div>
 
     <script>
-        // PWA Service Worker Registration
         if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js')
-                .then(reg => console.log('SW registered'))
-                .catch(err => console.log('SW error', err));
+            navigator.serviceWorker.register('sw.js').catch(() => {});
         }
 
         let words = [];
         let currentIndex = 0;
         let wpm = 300;
         let isPlaying = false;
-        let timer = null;
+        let timeoutId = null;
         let textHash = "";
 
         const inputSection = document.getElementById('input-section');
         const readerSection = document.getElementById('reader-section');
         const textInput = document.getElementById('text-input');
         const startBtn = document.getElementById('start-btn');
-        const wordDisplay = document.getElementById('word-display');
+        const wordContainer = document.getElementById('word-container');
         const wpmDisplay = document.getElementById('wpm-display');
         const progressDisplay = document.getElementById('progress-display');
         const notification = document.getElementById('notification');
@@ -159,10 +167,7 @@
 
         function saveProgress() {
             if (!textHash) return;
-            const data = {
-                index: currentIndex,
-                wpm: wpm
-            };
+            const data = { index: currentIndex, wpm: wpm };
             localStorage.setItem(textHash, JSON.stringify(data));
         }
 
@@ -172,7 +177,7 @@
                 const data = JSON.parse(saved);
                 currentIndex = data.index < words.length ? data.index : 0;
                 wpm = data.wpm || 300;
-                showNotification(`Ripreso dalla parola ${currentIndex}`);
+                showNotification(`Ripreso: ${Math.floor((currentIndex/words.length)*100)}%`);
             }
         }
 
@@ -182,11 +187,58 @@
             setTimeout(() => { notification.style.opacity = 0; }, 2000);
         }
 
-        const getInterval = () => 60000 / wpm;
+        function renderWord(word) {
+            if (!word) return;
+            const center = Math.ceil(word.length / 2) - 1;
+            const pre = word.slice(0, center);
+            const pivot = word[center];
+            const post = word.slice(center + 1);
+            
+            wordContainer.innerHTML = `
+                <span>${pre}</span><span class="highlight">${pivot}</span><span>${post}</span>
+            `;
+        }
+
+        function calculateDelay(word) {
+            let baseDelay = 60000 / wpm;
+            
+            // Smart Pacing Logic
+            if (word.length > 8) baseDelay *= 1.3; 
+            if (word.endsWith('.') || word.endsWith('!') || word.endsWith('?')) baseDelay *= 1.8;
+            else if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) baseDelay *= 1.4;
+            
+            return baseDelay;
+        }
+
+        function loop() {
+            if (!isPlaying) return;
+            
+            if (currentIndex >= words.length) {
+                isPlaying = false;
+                wordContainer.innerHTML = "Finito!";
+                currentIndex = 0;
+                saveProgress();
+                return;
+            }
+
+            const currentWord = words[currentIndex];
+            renderWord(currentWord);
+            
+            wpmDisplay.textContent = wpm;
+            const progress = Math.round(((currentIndex + 1) / words.length) * 100);
+            progressDisplay.textContent = `${progress}%`;
+
+            const delay = calculateDelay(currentWord);
+            
+            timeoutId = setTimeout(() => {
+                currentIndex++;
+                loop();
+            }, delay);
+        }
 
         startBtn.addEventListener('click', () => {
             const text = textInput.value.trim();
-            if (!text) return alert("Inserisci del testo prima!");
+            if (!text) return alert("Testo mancante");
 
             words = text.split(/\s+/);
             if (words.length === 0) return;
@@ -199,42 +251,14 @@
             inputSection.style.display = 'none';
             readerSection.style.display = 'block';
             
-            updateDisplay();
-            wordDisplay.textContent = currentIndex > 0 ? words[currentIndex] : "Premi SPAZIO";
+            renderWord(currentIndex > 0 ? words[currentIndex] : "Premi SPAZIO");
             wpmDisplay.textContent = wpm;
         });
 
-        function startReading() {
-            if (timer) clearInterval(timer);
-            isPlaying = true;
-            
-            timer = setInterval(() => {
-                if (currentIndex >= words.length - 1) {
-                    stopReading();
-                    wordDisplay.textContent = "Finito!";
-                    currentIndex = 0;
-                    saveProgress(); 
-                    return;
-                }
-                currentIndex++;
-                updateDisplay();
-            }, getInterval());
-        }
-
         function stopReading() {
             isPlaying = false;
-            if (timer) clearInterval(timer);
-            timer = null;
+            if (timeoutId) clearTimeout(timeoutId);
             saveProgress();
-        }
-
-        function updateDisplay() {
-            if (currentIndex < words.length) {
-                wordDisplay.textContent = words[currentIndex];
-                wpmDisplay.textContent = wpm;
-                const progress = Math.round(((currentIndex + 1) / words.length) * 100);
-                progressDisplay.textContent = `${progress}%`;
-            }
         }
 
         document.addEventListener('keydown', (e) => {
@@ -245,10 +269,11 @@
                     e.preventDefault();
                     if (isPlaying) {
                         stopReading();
-                        showNotification("Pausa & Salvato");
+                        showNotification("Pausa");
                     } else {
-                        if (currentIndex >= words.length - 1) currentIndex = 0;
-                        startReading();
+                        if (currentIndex >= words.length) currentIndex = 0;
+                        isPlaying = true;
+                        loop();
                     }
                     break;
 
@@ -256,14 +281,30 @@
                     e.preventDefault();
                     wpm += 10;
                     wpmDisplay.textContent = wpm;
-                    if (isPlaying) startReading();
                     break;
 
                 case 'ArrowDown':
                     e.preventDefault();
                     wpm = Math.max(10, wpm - 10);
                     wpmDisplay.textContent = wpm;
-                    if (isPlaying) startReading();
+                    break;
+
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    stopReading();
+                    currentIndex = Math.max(0, currentIndex - 10);
+                    renderWord(words[currentIndex]);
+                    updateProgressUI();
+                    showNotification("<< 10 parole");
+                    break;
+
+                case 'ArrowRight':
+                    e.preventDefault();
+                    stopReading();
+                    currentIndex = Math.min(words.length - 1, currentIndex + 10);
+                    renderWord(words[currentIndex]);
+                    updateProgressUI();
+                    showNotification(">> 10 parole");
                     break;
                 
                 case 'Escape':
@@ -274,9 +315,12 @@
             }
         });
 
-        window.addEventListener('beforeunload', () => {
-            saveProgress();
-        });
+        function updateProgressUI() {
+            const progress = Math.round(((currentIndex + 1) / words.length) * 100);
+            progressDisplay.textContent = `${progress}%`;
+        }
+
+        window.addEventListener('beforeunload', () => saveProgress());
     </script>
 </body>
 </html>
